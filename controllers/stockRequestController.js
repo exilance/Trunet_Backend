@@ -3047,8 +3047,7 @@ export const approveStockRequest = async (req, res) => {
     if (!hasAccess) {
       return res.status(403).json({
         success: false,
-        message:
-          "Access denied. stock_transfer_approve_from_outlet or manage_indent permission required.",
+        message: "Access denied. stock_transfer_approve_from_outlet or manage_indent permission required.",
       });
     }
 
@@ -3058,7 +3057,7 @@ export const approveStockRequest = async (req, res) => {
     const stockRequest = await StockRequest.findById(id)
       .populate("center", "reseller centerType centerName centerCode")
       .populate("warehouse", "centerType centerName centerCode");
-    
+
     if (!stockRequest) {
       return res.status(404).json({
         success: false,
@@ -3069,8 +3068,7 @@ export const approveStockRequest = async (req, res) => {
     if (!checkCenterAccess(stockRequest, userCenter, permissions)) {
       return res.status(403).json({
         success: false,
-        message:
-          "Access denied. You can only approve stock requests from your own center.",
+        message: "Access denied. You can only approve stock requests from your own center.",
       });
     }
 
@@ -3082,12 +3080,9 @@ export const approveStockRequest = async (req, res) => {
       });
     }
 
-    // Get reseller ID from the center making the request
     const resellerId = stockRequest.center?.reseller?._id || stockRequest.center?.reseller;
-    
-    // Check center type - only "Center" type should have reseller
     const centerType = stockRequest.center?.centerType;
-    
+
     if (centerType === "Center" && !resellerId) {
       return res.status(400).json({
         success: false,
@@ -3101,7 +3096,9 @@ export const approveStockRequest = async (req, res) => {
     const OutletStock = mongoose.model("OutletStock");
     const Product = mongoose.model("Product");
 
-    // Validate product approvals and check stock availability
+    // ─────────────────────────────────────────────────────────────────────────
+    // PHASE 1: Validate all product approvals + calculate source breakdowns
+    // ─────────────────────────────────────────────────────────────────────────
     if (productApprovals && productApprovals.length > 0) {
       for (const approval of productApprovals) {
         const productItem = stockRequest.products.find(
@@ -3115,21 +3112,14 @@ export const approveStockRequest = async (req, res) => {
           });
         }
 
-        // Validate approved quantity
-        if (
-          approval.approvedQuantity === undefined ||
-          approval.approvedQuantity === null
-        ) {
+        if (approval.approvedQuantity === undefined || approval.approvedQuantity === null) {
           return res.status(400).json({
             success: false,
             message: `Approved quantity is required for product ${productItem.product}`,
           });
         }
 
-        if (
-          typeof approval.approvedQuantity !== "number" ||
-          isNaN(approval.approvedQuantity)
-        ) {
+        if (typeof approval.approvedQuantity !== "number" || isNaN(approval.approvedQuantity)) {
           return res.status(400).json({
             success: false,
             message: `Approved quantity must be a valid number for product ${productItem.product}`,
@@ -3143,32 +3133,27 @@ export const approveStockRequest = async (req, res) => {
           });
         }
 
-        // if (approval.approvedQuantity > productItem.quantity) {
-        //   return res.status(400).json({
-        //     success: false,
-        //     message: `Approved quantity (${approval.approvedQuantity}) cannot exceed requested quantity (${productItem.quantity}) for product ${productItem.product}`,
-        //   });
-        // }
-
-        if (
-          approval.approvedQuantity === 0 &&
-          (!approval.approvedRemark || approval.approvedRemark.trim() === "")
-        ) {
+        if (approval.approvedQuantity === 0 && (!approval.approvedRemark || approval.approvedRemark.trim() === "")) {
           return res.status(400).json({
             success: false,
             message: `Approval remark is required when approved quantity is zero for product ${productItem.product}`,
           });
         }
 
-        // Calculate source breakdown for approved quantity
         const productDoc = await Product.findById(approval.productId);
-        const tracksSerialNumbers = productDoc?.trackSerialNumber === "Yes";
-        
-        // Get current stock levels
+        if (!productDoc) {
+          return res.status(400).json({
+            success: false,
+            message: `Product document not found for ID ${approval.productId}`,
+          });
+        }
+
+        const tracksSerialNumbers = productDoc.trackSerialNumber === "Yes";
+
         let resellerAvailable = 0;
         let outletAvailable = 0;
         let hasResellerStock = false;
-        
+
         if (resellerId) {
           const resellerStock = await ResellerStock.findOne({
             reseller: resellerId,
@@ -3180,35 +3165,39 @@ export const approveStockRequest = async (req, res) => {
           }
         }
 
-        const outletStock = await OutletStock.findOne({
+        const outletStockDoc = await OutletStock.findOne({
           outlet: stockRequest.warehouse,
           product: approval.productId,
         });
-        if (outletStock) {
-          outletAvailable = outletStock.availableQuantity || 0;
+        if (outletStockDoc) {
+          outletAvailable = outletStockDoc.availableQuantity || 0;
         }
 
-        // Calculate source breakdown based on availability
         let fromResellerQty = 0;
         let fromOutletQty = 0;
         let fromResellerSerials = [];
         let fromOutletSerials = [];
 
         if (tracksSerialNumbers && approval.approvedSerials && approval.approvedSerials.length > 0) {
-          // For serialized products, distribute based on where serials are available
+          if (approval.approvedSerials.length !== approval.approvedQuantity) {
+            return res.status(400).json({
+              success: false,
+              message: `Number of serial numbers (${approval.approvedSerials.length}) must match approved quantity (${approval.approvedQuantity}) for product ${productDoc.productTitle}`,
+            });
+          }
+
           const serials = approval.approvedSerials;
-          
-          // First check reseller stock for serials
+
           if (hasResellerStock && resellerAvailable > 0) {
             const resellerStockDoc = await ResellerStock.findOne({
               reseller: resellerId,
               product: approval.productId,
             });
-            
+
             if (resellerStockDoc) {
               for (const serialNumber of serials) {
                 const serial = resellerStockDoc.serialNumbers.find(
-                  sn => sn.serialNumber === serialNumber && sn.status === "available"
+                  (sn) => sn.serialNumber === serialNumber && sn.status === "available"
                 );
                 if (serial) {
                   fromResellerSerials.push(serialNumber);
@@ -3216,47 +3205,18 @@ export const approveStockRequest = async (req, res) => {
               }
             }
           }
-          
-          // Remaining serials come from outlet
+
           fromOutletSerials = serials.filter(
-            sn => !fromResellerSerials.includes(sn)
+            (sn) => !fromResellerSerials.includes(sn)
           );
-          
+
           fromResellerQty = fromResellerSerials.length;
           fromOutletQty = fromOutletSerials.length;
-        } else {
-          // For non-serialized products, use proportional distribution
-          // Priority: Reseller stock first, then outlet
-          fromResellerQty = Math.min(approval.approvedQuantity, resellerAvailable);
-          fromOutletQty = approval.approvedQuantity - fromResellerQty;
-        }
 
-        // Store source breakdown in the approval object
-        approval.sourceBreakdown = {
-          fromReseller: {
-            quantity: fromResellerQty,
-            serials: fromResellerSerials
-          },
-          fromOutlet: {
-            quantity: fromOutletQty,
-            serials: fromOutletSerials
-          },
-          totalApproved: approval.approvedQuantity
-        };
-
-        // Validate that total matches
-        if (fromResellerQty + fromOutletQty !== approval.approvedQuantity) {
-          return res.status(400).json({
-            success: false,
-            message: `Source breakdown calculation error for product ${productDoc?.productTitle}. Expected ${approval.approvedQuantity}, got Reseller: ${fromResellerQty}, Outlet: ${fromOutletQty}`,
-          });
-        }
-
-        if (tracksSerialNumbers && approval.approvedSerials) {
-          if (approval.approvedSerials.length !== approval.approvedQuantity) {
+          if (fromOutletQty > outletAvailable) {
             return res.status(400).json({
               success: false,
-              message: `Number of serial numbers (${approval.approvedSerials.length}) must match approved quantity (${approval.approvedQuantity}) for product ${productDoc.productTitle}`,
+              message: `Insufficient outlet stock for product "${productDoc.productTitle}". Outlet available: ${outletAvailable}, required from outlet: ${fromOutletQty}`,
             });
           }
 
@@ -3265,136 +3225,256 @@ export const approveStockRequest = async (req, res) => {
               reseller: resellerId,
               product: approval.productId,
             });
-            
+
             for (const serialNumber of fromResellerSerials) {
               const serial = resellerStockDoc?.serialNumbers.find(
-                sn => sn.serialNumber === serialNumber && sn.status === "available"
+                (sn) => sn.serialNumber === serialNumber && sn.status === "available"
               );
               if (!serial) {
                 return res.status(400).json({
                   success: false,
-                  message: `Serial number ${serialNumber} is not available in reseller stock for product ${productDoc.productTitle}`,
+                  message: `Serial number ${serialNumber} is not available in reseller stock for product "${productDoc.productTitle}"`,
                 });
               }
             }
           }
 
-          if (fromOutletSerials.length > 0 && outletStock) {
+          if (fromOutletSerials.length > 0 && outletStockDoc) {
             for (const serialNumber of fromOutletSerials) {
-              const serial = outletStock.serialNumbers.find(
-                sn => sn.serialNumber === serialNumber && sn.status === "available"
+              const serial = outletStockDoc.serialNumbers.find(
+                (sn) => sn.serialNumber === serialNumber && sn.status === "available"
               );
               if (!serial) {
                 return res.status(400).json({
                   success: false,
-                  message: `Serial number ${serialNumber} is not available in outlet stock for product ${productDoc.productTitle}`,
+                  message: `Serial number ${serialNumber} is not available in outlet stock for product "${productDoc.productTitle}"`,
                 });
               }
             }
+          }
+        } else {
+          if (approval.approvedQuantity > 0) {
+            fromResellerQty = Math.min(approval.approvedQuantity, resellerAvailable);
+            const remaining = approval.approvedQuantity - fromResellerQty;
+
+            if (remaining > outletAvailable) {
+              return res.status(400).json({
+                success: false,
+                message: `Insufficient stock for product "${productDoc.productTitle}". ` +
+                  `Reseller available: ${resellerAvailable}, Outlet available: ${outletAvailable}, ` +
+                  `Total approved: ${approval.approvedQuantity}, Total available: ${resellerAvailable + outletAvailable}`,
+              });
+            }
+
+            fromOutletQty = remaining;
           }
         }
+
+        if (fromResellerQty + fromOutletQty !== approval.approvedQuantity) {
+          return res.status(400).json({
+            success: false,
+            message: `Source breakdown mismatch for product "${productDoc.productTitle}". ` +
+              `Expected ${approval.approvedQuantity}, got Reseller: ${fromResellerQty} + Outlet: ${fromOutletQty}`,
+          });
+        }
+
+        approval.sourceBreakdown = {
+          fromReseller: {
+            quantity: fromResellerQty,
+            serials: fromResellerSerials,
+          },
+          fromOutlet: {
+            quantity: fromOutletQty,
+            serials: fromOutletSerials,
+          },
+          totalApproved: approval.approvedQuantity,
+        };
       }
 
-      // Update outlet stock (mark as in_transit)
+      // ─────────────────────────────────────────────────────────────────────
+      // PHASE 2: All validations passed — now apply stock changes with FRESH FETCH
+      // ─────────────────────────────────────────────────────────────────────
       for (const approval of productApprovals) {
+        // ── Deduct from outlet stock (mark in_transit) ────────────────────
         if (approval.approvedQuantity > 0 && approval.sourceBreakdown.fromOutlet.quantity > 0) {
+          // 🔄 FRESH FETCH right before deduction to avoid stale data
           const outletStock = await OutletStock.findOne({
             outlet: stockRequest.warehouse,
             product: approval.productId,
           });
 
-          if (outletStock) {
-            const outletSerials = approval.sourceBreakdown.fromOutlet.serials;
-            
-            if (outletSerials.length > 0) {
-              // Mark serialized products as in_transit
-              for (const serialNumber of outletSerials) {
-                const serial = outletStock.serialNumbers.find(
-                  (sn) => sn.serialNumber === serialNumber
-                );
+          const outletQty = approval.sourceBreakdown.fromOutlet.quantity;
+          const outletSerials = approval.sourceBreakdown.fromOutlet.serials;
 
-                if (serial && serial.status === "available") {
-                  serial.status = "in_transit";
-                  serial.currentLocation = stockRequest.warehouse;
+          // ✅ Check again with fresh data
+          if (!outletStock) {
+            return res.status(400).json({
+              success: false,
+              message: `Outlet stock record not found for product ${approval.productId}`,
+            });
+          }
 
-                  serial.transferHistory.push({
-                    fromCenter: stockRequest.warehouse,
-                    toCenter: stockRequest.center,
-                    transferDate: new Date(),
-                    transferType: "outlet_to_center",
-                    status: "in_transit",
-                  });
-                }
+          if (outletStock.availableQuantity < outletQty) {
+            return res.status(400).json({
+              success: false,
+              message: `Outlet stock changed! Available now: ${outletStock.availableQuantity}, Required: ${outletQty}. Please retry.`,
+            });
+          }
+
+          // ✅ Use atomic update to prevent race conditions
+          if (outletSerials.length > 0) {
+            for (const serialNumber of outletSerials) {
+              const serial = outletStock.serialNumbers.find(
+                (sn) => sn.serialNumber === serialNumber
+              );
+
+              if (serial && serial.status === "available") {
+                serial.status = "in_transit";
+                serial.currentLocation = stockRequest.warehouse;
+
+                serial.transferHistory.push({
+                  fromCenter: stockRequest.warehouse,
+                  toCenter: stockRequest.center,
+                  transferDate: new Date(),
+                  transferType: "outlet_to_center",
+                  status: "in_transit",
+                });
+              } else {
+                return res.status(400).json({
+                  success: false,
+                  message: `Serial number ${serialNumber} is no longer available in outlet stock`,
+                });
               }
-
-              outletStock.availableQuantity -= outletSerials.length;
-              outletStock.inTransitQuantity += outletSerials.length;
-            } else {
-              // Non-serialized products
-              const outletQty = approval.sourceBreakdown.fromOutlet.quantity;
-              outletStock.availableQuantity -= outletQty;
-              outletStock.inTransitQuantity += outletQty;
             }
 
-            await outletStock.save();
+            outletStock.availableQuantity -= outletSerials.length;
+            outletStock.inTransitQuantity += outletSerials.length;
+          } else {
+            // ✅ Atomic operation using $inc
+            const updateResult = await OutletStock.updateOne(
+              {
+                _id: outletStock._id,
+                availableQuantity: { $gte: outletQty } // Atomic condition
+              },
+              {
+                $inc: {
+                  availableQuantity: -outletQty,
+                  inTransitQuantity: outletQty
+                }
+              }
+            );
+
+            if (updateResult.modifiedCount === 0) {
+              return res.status(409).json({
+                success: false,
+                message: `Stock changed during approval for product. Please retry.`,
+              });
+            }
+            
+            // Skip the manual save since we used updateOne
+            await outletStock.save(); // This will still work for serials case
           }
+          
+          if (outletSerials.length === 0) {
+            // For non-serial, we already updated via updateOne, so skip save
+            continue;
+          }
+          await outletStock.save();
         }
 
-        // Mark reseller stock as consumed (if any)
+        // ── Deduct from reseller stock (mark consumed) ────────────────────
         if (approval.sourceBreakdown.fromReseller.quantity > 0 && resellerId) {
+          // 🔄 FRESH FETCH for reseller stock too
           const resellerStock = await ResellerStock.findOne({
             reseller: resellerId,
             product: approval.productId,
           });
 
-          if (resellerStock) {
-            const resellerSerials = approval.sourceBreakdown.fromReseller.serials;
-            
-            if (resellerSerials.length > 0) {
-              for (const serialNumber of resellerSerials) {
-                const serial = resellerStock.serialNumbers.find(
-                  (sn) => sn.serialNumber === serialNumber
-                );
+          const resellerQty = approval.sourceBreakdown.fromReseller.quantity;
+          const resellerSerials = approval.sourceBreakdown.fromReseller.serials;
 
-                if (serial && serial.status === "available") {
-                  serial.status = "consumed";
-                  serial.currentLocation = stockRequest.center;
-                  serial.consumedDate = new Date();
-                  serial.consumedBy = userId;
+          if (!resellerStock) {
+            return res.status(400).json({
+              success: false,
+              message: `Reseller stock record not found for product ${approval.productId}`,
+            });
+          }
 
-                  serial.transferHistory.push({
-                    fromCenter: null,
-                    toCenter: stockRequest.center,
-                    transferDate: new Date(),
-                    transferType: "outbound_transfer",
-                    remark: "Stock request approval",
-                    transferredBy: userId,
-                    referenceId: stockRequest._id
-                  });
-                }
+          if (resellerStock.availableQuantity < resellerQty) {
+            return res.status(400).json({
+              success: false,
+              message: `Reseller stock changed! Available now: ${resellerStock.availableQuantity}, Required: ${resellerQty}. Please retry.`,
+            });
+          }
+
+          if (resellerSerials.length > 0) {
+            for (const serialNumber of resellerSerials) {
+              const serial = resellerStock.serialNumbers.find(
+                (sn) => sn.serialNumber === serialNumber
+              );
+
+              if (serial && serial.status === "available") {
+                serial.status = "consumed";
+                serial.currentLocation = stockRequest.center;
+                serial.consumedDate = new Date();
+                serial.consumedBy = userId;
+
+                serial.transferHistory.push({
+                  fromCenter: null,
+                  toCenter: stockRequest.center,
+                  transferDate: new Date(),
+                  transferType: "outbound_transfer",
+                  remark: "Stock request approval",
+                  transferredBy: userId,
+                  referenceId: stockRequest._id,
+                });
+              } else {
+                return res.status(400).json({
+                  success: false,
+                  message: `Serial number ${serialNumber} is no longer available in reseller stock`,
+                });
               }
-
-              resellerStock.availableQuantity -= resellerSerials.length;
-              resellerStock.consumedQuantity += resellerSerials.length;
-            } else {
-              // Non-serialized products from reseller
-              const resellerQty = approval.sourceBreakdown.fromReseller.quantity;
-              resellerStock.availableQuantity -= resellerQty;
-              resellerStock.consumedQuantity += resellerQty;
             }
 
-            await resellerStock.save();
+            resellerStock.availableQuantity -= resellerSerials.length;
+            resellerStock.consumedQuantity += resellerSerials.length;
+          } else {
+            // ✅ Atomic update for non-serial reseller stock
+            const updateResult = await ResellerStock.updateOne(
+              {
+                _id: resellerStock._id,
+                availableQuantity: { $gte: resellerQty }
+              },
+              {
+                $inc: {
+                  availableQuantity: -resellerQty,
+                  consumedQuantity: resellerQty
+                }
+              }
+            );
+
+            if (updateResult.modifiedCount === 0) {
+              return res.status(409).json({
+                success: false,
+                message: `Reseller stock changed during approval. Please retry.`,
+              });
+            }
+            continue;
           }
+
+          await resellerStock.save();
         }
       }
     }
 
-    // Update stock request with source breakdown
-    const updatedProducts = stockRequest.products.map(productItem => {
-      const approval = productApprovals.find(
-        pa => pa.productId.toString() === productItem.product.toString()
+    // ─────────────────────────────────────────────────────────────────────────
+    // PHASE 3: Persist updated products + call approveRequest
+    // ─────────────────────────────────────────────────────────────────────────
+    const updatedProducts = stockRequest.products.map((productItem) => {
+      const approval = productApprovals?.find(
+        (pa) => pa.productId.toString() === productItem.product.toString()
       );
-      
+
       if (approval) {
         return {
           ...productItem.toObject(),
@@ -3404,8 +3484,8 @@ export const approveStockRequest = async (req, res) => {
           sourceBreakdown: approval.sourceBreakdown || {
             fromReseller: { quantity: 0, serials: [] },
             fromOutlet: { quantity: 0, serials: [] },
-            totalApproved: 0
-          }
+            totalApproved: 0,
+          },
         };
       }
       return productItem;
@@ -3414,7 +3494,6 @@ export const approveStockRequest = async (req, res) => {
     stockRequest.products = updatedProducts;
     await stockRequest.save();
 
-    // Now call approveRequest
     const updatedRequest = await stockRequest.approveRequest(
       userId,
       productApprovals
@@ -3448,7 +3527,8 @@ export const approveStockRequest = async (req, res) => {
       error.message.includes("Approved quantity cannot be negative") ||
       error.message.includes("Approval remark is required") ||
       error.message.includes("No stock available") ||
-      error.message.includes("Insufficient stock")
+      error.message.includes("Insufficient stock") ||
+      error.message.includes("Stock changed")
     ) {
       return res.status(400).json({
         success: false,
@@ -3457,7 +3537,11 @@ export const approveStockRequest = async (req, res) => {
       });
     }
 
-    if (error.code === 11000 && error.keyPattern && error.keyPattern.challanNo) {
+    if (
+      error.code === 11000 &&
+      error.keyPattern &&
+      error.keyPattern.challanNo
+    ) {
       return res.status(400).json({
         success: false,
         message: "Duplicate challan number generated. Please try again.",
