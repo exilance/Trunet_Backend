@@ -6553,6 +6553,37 @@ export const completeStockRequest = async (req, res) => {
       console.log(`[DEBUG][VALIDATION]   receivedSerials type=${typeof receipt.receivedSerials}, value=`, JSON.stringify(receipt.receivedSerials));
 
       if (tracksSerialNumbers) {
+        // Auto-assign serials if not provided in request
+        if (!receipt.receivedSerials || receipt.receivedSerials.length === 0) {
+          // Get approved serials from stock request
+          const stockProductItem = stockRequest.products.find(
+            (p) => p.product.toString() === receipt.productId.toString()
+          );
+          
+          if (stockProductItem && stockProductItem.approvedSerials && stockProductItem.approvedSerials.length > 0) {
+            // Auto-assign based on received quantity
+            if (receipt.receivedQuantity === stockProductItem.approvedQuantity) {
+              receipt.receivedSerials = [...stockProductItem.approvedSerials];
+              console.log(`[DEBUG][AUTO-ASSIGN] Auto-assigned all ${receipt.receivedSerials.length} serials for product ${receipt.productId}`);
+            } 
+            else if (receipt.receivedQuantity < stockProductItem.approvedQuantity) {
+              receipt.receivedSerials = stockProductItem.approvedSerials.slice(0, receipt.receivedQuantity);
+              console.log(`[DEBUG][AUTO-ASSIGN] Auto-assigned ${receipt.receivedSerials.length} serials (partial) for product ${receipt.productId}`);
+            }
+            else {
+              return res.status(400).json({
+                success: false,
+                message: `Received quantity (${receipt.receivedQuantity}) cannot exceed approved quantity (${stockProductItem.approvedQuantity}) for product ${productDoc.productTitle}`,
+              });
+            }
+          } else {
+            return res.status(400).json({
+              success: false,
+              message: `No approved serials found for product ${productDoc.productTitle}. Cannot auto-assign.`,
+            });
+          }
+        }
+
         // Normalise: treat null/undefined as empty array
         const receivedSerials = Array.isArray(receipt.receivedSerials)
           ? receipt.receivedSerials
