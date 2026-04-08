@@ -6409,7 +6409,7 @@ export const completeStockRequest = async (req, res) => {
 
     console.log(`[DEBUG] =========================================`);
     console.log(`[DEBUG] Completing stock request: ${id}`);
-    console.log(`[DEBUG] Product receipts:`, JSON.stringify(productReceipts, null, 2));
+    console.log(`[DEBUG] Raw productReceipts from body:`, JSON.stringify(productReceipts, null, 2));
     console.log(`[DEBUG] =========================================`);
 
     const stockRequest = await StockRequest.findById(id);
@@ -6464,7 +6464,26 @@ export const completeStockRequest = async (req, res) => {
     const OutletStock = mongoose.model("OutletStock");
     const CenterStock = mongoose.model("CenterStock");
 
-    // Validate product receipts
+    // ============================================================
+    // PRE-FETCH: Cache productDoc + tracksSerialNumbers for each
+    // receipt so we use the SAME data in both validation and processing
+    // ============================================================
+    const productDocCache = new Map(); // productId (string) -> { productDoc, tracksSerialNumbers }
+
+    for (const receipt of productReceipts) {
+      if (!receipt.productId) continue;
+      const key = receipt.productId.toString();
+      if (!productDocCache.has(key)) {
+        const productDoc = await Product.findById(receipt.productId);
+        const tracksSerialNumbers = productDoc?.trackSerialNumber === "Yes";
+        productDocCache.set(key, { productDoc, tracksSerialNumbers });
+        console.log(`[DEBUG] Cached product doc for ${key}: trackSerialNumber="${productDoc?.trackSerialNumber}", tracksSerialNumbers=${tracksSerialNumbers}`);
+      }
+    }
+
+    // ============================================================
+    // VALIDATION LOOP
+    // ============================================================
     for (const receipt of productReceipts) {
       if (!receipt.productId) {
         return res.status(400).json({
@@ -6525,11 +6544,19 @@ export const completeStockRequest = async (req, res) => {
         });
       }
 
-      const productDoc = await Product.findById(receipt.productId);
-      const tracksSerialNumbers = productDoc?.trackSerialNumber === "Yes";
+      // Use cached doc (no second DB call)
+      const { productDoc, tracksSerialNumbers } = productDocCache.get(receipt.productId.toString());
+
+      console.log(`[DEBUG][VALIDATION] Product ${receipt.productId}:`);
+      console.log(`[DEBUG][VALIDATION]   tracksSerialNumbers=${tracksSerialNumbers}`);
+      console.log(`[DEBUG][VALIDATION]   receivedQuantity=${receipt.receivedQuantity}`);
+      console.log(`[DEBUG][VALIDATION]   receivedSerials type=${typeof receipt.receivedSerials}, value=`, JSON.stringify(receipt.receivedSerials));
 
       if (tracksSerialNumbers) {
-        const receivedSerials = receipt.receivedSerials || [];
+        // Normalise: treat null/undefined as empty array
+        const receivedSerials = Array.isArray(receipt.receivedSerials)
+          ? receipt.receivedSerials
+          : [];
 
         if (receipt.receivedQuantity > 0) {
           if (receivedSerials.length !== receipt.receivedQuantity) {
@@ -6538,7 +6565,7 @@ export const completeStockRequest = async (req, res) => {
               message: `Number of received serials (${receivedSerials.length}) must match received quantity (${receipt.receivedQuantity}) for product ${productDoc.productTitle}`,
             });
           }
-          
+
           if (receivedSerials.length > 0) {
             const uniqueSerials = new Set(receivedSerials);
             if (uniqueSerials.size !== receivedSerials.length) {
@@ -6566,7 +6593,9 @@ export const completeStockRequest = async (req, res) => {
       }
     }
 
-    // Process stock receipt and transfer to center
+    // ============================================================
+    // PROCESSING LOOP
+    // ============================================================
     for (const receipt of productReceipts) {
       const productItem = stockRequest.products.find(
         (p) => p.product.toString() === receipt.productId.toString()
@@ -6579,6 +6608,9 @@ export const completeStockRequest = async (req, res) => {
         });
       }
 
+      // Use cached doc (same reference as validation — no inconsistency possible)
+      const { productDoc, tracksSerialNumbers } = productDocCache.get(receipt.productId.toString());
+
       // Get source breakdown from product item
       const sourceBreakdown = productItem.sourceBreakdown || {
         fromReseller: { quantity: 0, serials: [] },
@@ -6588,101 +6620,111 @@ export const completeStockRequest = async (req, res) => {
 
       const totalApproved = sourceBreakdown.totalApproved || productItem.approvedQuantity || 0;
       const receivedCount = receipt.receivedQuantity;
-      
+
+      // Normalise receivedSerials once — same logic as validation
+      const receivedSerialsFromBody = Array.isArray(receipt.receivedSerials)
+        ? receipt.receivedSerials
+        : [];
+
       console.log(`\n[DEBUG] =========================================`);
       console.log(`[DEBUG] Processing product: ${receipt.productId}`);
       console.log(`[DEBUG] =========================================`);
+      console.log(`[DEBUG] tracksSerialNumbers: ${tracksSerialNumbers}`);
       console.log(`[DEBUG] Total approved: ${totalApproved}`);
       console.log(`[DEBUG] Received count: ${receivedCount}`);
+      console.log(`[DEBUG] receivedSerialsFromBody (${receivedSerialsFromBody.length}): ${receivedSerialsFromBody.join(', ') || 'none'}`);
       console.log(`[DEBUG] Source breakdown:`);
       console.log(`[DEBUG]   - From Reseller: ${sourceBreakdown.fromReseller.quantity} units${sourceBreakdown.fromReseller.serials?.length > 0 ? ` (${sourceBreakdown.fromReseller.serials.length} serials)` : ''}`);
       console.log(`[DEBUG]   - From Outlet: ${sourceBreakdown.fromOutlet.quantity} units${sourceBreakdown.fromOutlet.serials?.length > 0 ? ` (${sourceBreakdown.fromOutlet.serials.length} serials)` : ''}`);
-      
-      // Get product document to check serial tracking
-      const productDoc = await Product.findById(receipt.productId);
-      const tracksSerialNumbers = productDoc?.trackSerialNumber === "Yes";
-      
+
       let fromResellerReceived = 0;
       let fromOutletReceived = 0;
       let serialsToReceive = [];
       let serialsToReturn = [];
-      
-      // CRITICAL FIX: Check if product tracks serial numbers FIRST
+
       if (tracksSerialNumbers) {
         console.log(`[DEBUG] Product tracks serial numbers - using serialized distribution logic`);
-        
-        // Get all approved serials from both sources
-        const allApprovedSerials = [...(sourceBreakdown.fromReseller.serials || []), ...(sourceBreakdown.fromOutlet.serials || [])];
-        console.log(`[DEBUG] All approved serials: ${allApprovedSerials.join(', ')}`);
-        
+
+        const allApprovedSerials = [
+          ...(sourceBreakdown.fromReseller.serials || []),
+          ...(sourceBreakdown.fromOutlet.serials || [])
+        ];
+        console.log(`[DEBUG] All approved serials (${allApprovedSerials.length}): ${allApprovedSerials.join(', ')}`);
+
         if (receivedCount === 0) {
-          // If received quantity is 0, all serials should be returned
           serialsToReceive = [];
           serialsToReturn = [...allApprovedSerials];
           fromResellerReceived = 0;
           fromOutletReceived = 0;
-          
+
           console.log(`[DEBUG] Zero receipt - returning all ${serialsToReturn.length} serials`);
-          console.log(`[DEBUG]   Serials to return: ${serialsToReturn.join(', ')}`);
         } else {
-          // Use the provided received serials
-          serialsToReceive = receipt.receivedSerials || [];
-          
-          if (serialsToReceive.length !== receivedCount) {
-            return res.status(400).json({
-              success: false,
-              message: `Number of received serials (${serialsToReceive.length}) doesn't match received quantity (${receivedCount}) for product ${productDoc.productTitle}`,
-            });
-          }
-          
+          // Use the normalised array — guaranteed to match receivedCount (validated above)
+          serialsToReceive = receivedSerialsFromBody;
+
+          console.log(`[DEBUG] serialsToReceive (${serialsToReceive.length}): ${serialsToReceive.join(', ')}`);
+
           // Validate that all received serials are from approved list
-          const invalidSerials = serialsToReceive.filter(serial => !allApprovedSerials.includes(serial));
+          const invalidSerials = serialsToReceive.filter(
+            (serial) => !allApprovedSerials.includes(serial)
+          );
           if (invalidSerials.length > 0) {
             return res.status(400).json({
               success: false,
               message: `Invalid serial numbers received: ${invalidSerials.join(', ')}. These were not approved for this request.`,
             });
           }
-          
-          // Calculate which serials are being received from each source
-          fromResellerReceived = serialsToReceive.filter(serial => 
+
+          fromResellerReceived = serialsToReceive.filter((serial) =>
             sourceBreakdown.fromReseller.serials?.includes(serial)
           ).length;
-          fromOutletReceived = serialsToReceive.filter(serial => 
+          fromOutletReceived = serialsToReceive.filter((serial) =>
             sourceBreakdown.fromOutlet.serials?.includes(serial)
           ).length;
-          
-          // Determine which serials are being returned (not received)
-          serialsToReturn = allApprovedSerials.filter(serial => !serialsToReceive.includes(serial));
-          
+
+          serialsToReturn = allApprovedSerials.filter(
+            (serial) => !serialsToReceive.includes(serial)
+          );
+
           console.log(`[DEBUG] Serialized distribution:`);
-          console.log(`[DEBUG]   - Received from Reseller: ${fromResellerReceived} serials (${serialsToReceive.filter(s => sourceBreakdown.fromReseller.serials?.includes(s)).join(', ') || 'none'})`);
-          console.log(`[DEBUG]   - Received from Outlet: ${fromOutletReceived} serials (${serialsToReceive.filter(s => sourceBreakdown.fromOutlet.serials?.includes(s)).join(', ') || 'none'})`);
+          console.log(`[DEBUG]   - Received from Reseller: ${fromResellerReceived}`);
+          console.log(`[DEBUG]   - Received from Outlet: ${fromOutletReceived}`);
           console.log(`[DEBUG]   - Returning: ${serialsToReturn.length} serials (${serialsToReturn.join(', ') || 'none'})`);
         }
       } else {
-        // Non-serialized products - use quantity-based distribution
         console.log(`[DEBUG] Product does NOT track serial numbers - using quantity-based distribution`);
-        
-        const resellerRatio = totalApproved > 0 ? sourceBreakdown.fromReseller.quantity / totalApproved : 0;
+
+        const resellerRatio =
+          totalApproved > 0
+            ? sourceBreakdown.fromReseller.quantity / totalApproved
+            : 0;
         fromResellerReceived = Math.round(receivedCount * resellerRatio);
         fromOutletReceived = receivedCount - fromResellerReceived;
-        
-        // Ensure we don't exceed available quantities
-        fromResellerReceived = Math.min(fromResellerReceived, sourceBreakdown.fromReseller.quantity);
-        fromOutletReceived = Math.min(fromOutletReceived, sourceBreakdown.fromOutlet.quantity);
-        
-        // Adjust if total doesn't match received count
+
+        fromResellerReceived = Math.min(
+          fromResellerReceived,
+          sourceBreakdown.fromReseller.quantity
+        );
+        fromOutletReceived = Math.min(
+          fromOutletReceived,
+          sourceBreakdown.fromOutlet.quantity
+        );
+
         let totalFromSources = fromResellerReceived + fromOutletReceived;
         if (totalFromSources !== receivedCount && totalFromSources < receivedCount) {
           const difference = receivedCount - totalFromSources;
-          if (sourceBreakdown.fromOutlet.quantity - fromOutletReceived >= difference) {
+          if (
+            sourceBreakdown.fromOutlet.quantity - fromOutletReceived >= difference
+          ) {
             fromOutletReceived += difference;
-          } else if (sourceBreakdown.fromReseller.quantity - fromResellerReceived >= difference) {
+          } else if (
+            sourceBreakdown.fromReseller.quantity - fromResellerReceived >=
+            difference
+          ) {
             fromResellerReceived += difference;
           }
         }
-        
+
         console.log(`[DEBUG] Quantity-based distribution:`);
         console.log(`[DEBUG]   - From Reseller: ${fromResellerReceived} units`);
         console.log(`[DEBUG]   - From Outlet: ${fromOutletReceived} units`);
@@ -6709,21 +6751,18 @@ export const completeStockRequest = async (req, res) => {
         console.log(`[DEBUG]   Available: ${outletStock.availableQuantity}`);
         console.log(`[DEBUG]   InTransit: ${outletStock.inTransitQuantity}`);
         console.log(`[DEBUG]   Total: ${outletStock.totalQuantity}`);
-        
-        // Get outlet serials from source breakdown
+
         const outletSerials = sourceBreakdown.fromOutlet.serials || [];
-        
+
         if (tracksSerialNumbers && outletSerials.length > 0) {
-          // For serialized products - handle specific serials
-          
-          // A. Handle RECEIVED items from outlet (mark as transferred)
-          const receivedOutletSerials = serialsToReceive.filter(serial => 
+          // A. Handle RECEIVED items from outlet
+          const receivedOutletSerials = serialsToReceive.filter((serial) =>
             outletSerials.includes(serial)
           );
-          
+
           if (receivedOutletSerials.length > 0) {
             console.log(`[DEBUG] Marking ${receivedOutletSerials.length} serials as transferred to center`);
-            
+
             for (const serialNumber of receivedOutletSerials) {
               const serial = outletStock.serialNumbers.find(
                 (sn) => sn.serialNumber === serialNumber
@@ -6734,7 +6773,8 @@ export const completeStockRequest = async (req, res) => {
                 serial.currentLocation = stockRequest.center;
                 serial.transferredDate = new Date();
 
-                const lastTransfer = serial.transferHistory[serial.transferHistory.length - 1];
+                const lastTransfer =
+                  serial.transferHistory[serial.transferHistory.length - 1];
                 if (lastTransfer) {
                   lastTransfer.status = "completed";
                   lastTransfer.completedAt = new Date();
@@ -6744,22 +6784,23 @@ export const completeStockRequest = async (req, res) => {
                 serial.status = "transferred";
                 serial.currentLocation = stockRequest.center;
                 console.log(`[DEBUG]     ✓ Serial ${serialNumber} was available, now transferred`);
+              } else {
+                console.warn(`[DEBUG]     ⚠ Serial ${serialNumber} has unexpected status: ${serial?.status}`);
               }
             }
-            
-            // Update quantities for received items
+
             outletStock.inTransitQuantity -= receivedOutletSerials.length;
             outletStock.totalQuantity -= receivedOutletSerials.length;
           }
-          
-          // B. Handle RETURNED items to outlet (revert in_transit to available)
-          const returnedOutletSerials = serialsToReturn.filter(serial => 
+
+          // B. Handle RETURNED items to outlet
+          const returnedOutletSerials = serialsToReturn.filter((serial) =>
             outletSerials.includes(serial)
           );
-          
+
           if (returnedOutletSerials.length > 0) {
             console.log(`[DEBUG] Returning ${returnedOutletSerials.length} serials back to available stock`);
-            
+
             for (const serialNumber of returnedOutletSerials) {
               const serial = outletStock.serialNumbers.find(
                 (sn) => sn.serialNumber === serialNumber
@@ -6769,9 +6810,9 @@ export const completeStockRequest = async (req, res) => {
                 serial.status = "available";
                 serial.currentLocation = stockRequest.warehouse;
 
-                // Remove the transfer history entry
                 if (serial.transferHistory.length > 0) {
-                  const lastTransfer = serial.transferHistory[serial.transferHistory.length - 1];
+                  const lastTransfer =
+                    serial.transferHistory[serial.transferHistory.length - 1];
                   if (lastTransfer.status === "in_transit") {
                     serial.transferHistory.pop();
                   }
@@ -6781,36 +6822,35 @@ export const completeStockRequest = async (req, res) => {
                 console.log(`[DEBUG]     ⚠ Serial ${serialNumber} already available`);
               }
             }
-            
-            // Update quantities for returned items
+
             outletStock.availableQuantity += returnedOutletSerials.length;
             outletStock.inTransitQuantity -= returnedOutletSerials.length;
-            // Total quantity remains the same since these were never actually removed from total
           }
         } else {
-          // For non-serialized products
-          const returnToOutlet = sourceBreakdown.fromOutlet.quantity - fromOutletReceived;
-          
+          // Non-serialized
+          const returnToOutlet =
+            sourceBreakdown.fromOutlet.quantity - fromOutletReceived;
+
           if (fromOutletReceived > 0) {
             console.log(`[DEBUG] Transferring ${fromOutletReceived} units from outlet to center`);
             if (outletStock.inTransitQuantity >= fromOutletReceived) {
               outletStock.inTransitQuantity -= fromOutletReceived;
               outletStock.totalQuantity -= fromOutletReceived;
-              console.log(`[DEBUG]     ✓ Removed ${fromOutletReceived} units from in-transit and total`);
             } else {
               console.warn(`[DEBUG]     ⚠ Insufficient in-transit! Has: ${outletStock.inTransitQuantity}, Needs: ${fromOutletReceived}`);
-              const clearable = Math.min(fromOutletReceived, outletStock.inTransitQuantity);
+              const clearable = Math.min(
+                fromOutletReceived,
+                outletStock.inTransitQuantity
+              );
               outletStock.inTransitQuantity -= clearable;
               outletStock.totalQuantity -= clearable;
-              console.log(`[DEBUG]     ✓ Cleared ${clearable} units (partial)`);
             }
           }
-          
+
           if (returnToOutlet > 0) {
             console.log(`[DEBUG] Returning ${returnToOutlet} units back to outlet available stock`);
             outletStock.availableQuantity += returnToOutlet;
             outletStock.inTransitQuantity -= returnToOutlet;
-            console.log(`[DEBUG]     ✓ Added ${returnToOutlet} units back to available`);
           }
         }
 
@@ -6818,7 +6858,7 @@ export const completeStockRequest = async (req, res) => {
         console.log(`[DEBUG]   Available: ${outletStock.availableQuantity}`);
         console.log(`[DEBUG]   InTransit: ${outletStock.inTransitQuantity}`);
         console.log(`[DEBUG]   Total: ${outletStock.totalQuantity}`);
-        
+
         await outletStock.save();
       }
 
@@ -6826,7 +6866,8 @@ export const completeStockRequest = async (req, res) => {
       // 2. HANDLE RESELLER STOCK UPDATES
       // ============================================
       if (sourceBreakdown.fromReseller.quantity > 0) {
-        const resellerId = stockRequest.center?.reseller?._id || stockRequest.center?.reseller;
+        const resellerId =
+          stockRequest.center?.reseller?._id || stockRequest.center?.reseller;
         if (resellerId) {
           const resellerStock = await ResellerStock.findOne({
             reseller: resellerId,
@@ -6838,25 +6879,22 @@ export const completeStockRequest = async (req, res) => {
             console.log(`[DEBUG] Before update:`);
             console.log(`[DEBUG]   Available: ${resellerStock.availableQuantity}`);
             console.log(`[DEBUG]   Consumed: ${resellerStock.consumedQuantity}`);
-            
+
             const resellerSerials = sourceBreakdown.fromReseller.serials || [];
-            
+
             if (tracksSerialNumbers && resellerSerials.length > 0) {
-              // For serialized products
-              
-              // A. Handle RECEIVED items from reseller (confirm consumption)
-              const receivedResellerSerials = serialsToReceive.filter(serial => 
-                resellerSerials.includes(serial)
+              const receivedResellerSerials = serialsToReceive.filter(
+                (serial) => resellerSerials.includes(serial)
               );
-              
+
               if (receivedResellerSerials.length > 0) {
                 console.log(`[DEBUG] Confirming consumption of ${receivedResellerSerials.length} reseller serials`);
-                
+
                 for (const serialNumber of receivedResellerSerials) {
                   const serial = resellerStock.serialNumbers.find(
-                    sn => sn.serialNumber === serialNumber
+                    (sn) => sn.serialNumber === serialNumber
                   );
-                  
+
                   if (serial && serial.status === "available") {
                     serial.status = "consumed";
                     serial.consumedDate = new Date();
@@ -6867,20 +6905,19 @@ export const completeStockRequest = async (req, res) => {
                   }
                 }
               }
-              
-              // B. Handle RETURNED items to reseller (revert consumption)
-              const returnedResellerSerials = serialsToReturn.filter(serial => 
-                resellerSerials.includes(serial)
+
+              const returnedResellerSerials = serialsToReturn.filter(
+                (serial) => resellerSerials.includes(serial)
               );
-              
+
               if (returnedResellerSerials.length > 0) {
                 console.log(`[DEBUG] Returning ${returnedResellerSerials.length} reseller serials back to available`);
-                
+
                 for (const serialNumber of returnedResellerSerials) {
                   const serial = resellerStock.serialNumbers.find(
-                    sn => sn.serialNumber === serialNumber
+                    (sn) => sn.serialNumber === serialNumber
                   );
-                  
+
                   if (serial && serial.status === "consumed") {
                     serial.status = "available";
                     serial.consumedDate = undefined;
@@ -6890,32 +6927,29 @@ export const completeStockRequest = async (req, res) => {
                     console.log(`[DEBUG]     ✓ Serial ${serialNumber} already available`);
                   }
                 }
-                
-                // Update quantities
+
                 resellerStock.availableQuantity += returnedResellerSerials.length;
                 resellerStock.consumedQuantity -= returnedResellerSerials.length;
-                console.log(`[DEBUG]   Updated quantities: Available +${returnedResellerSerials.length}, Consumed -${returnedResellerSerials.length}`);
               }
             } else {
-              // For non-serialized products
-              const returnToReseller = sourceBreakdown.fromReseller.quantity - fromResellerReceived;
-              
+              const returnToReseller =
+                sourceBreakdown.fromReseller.quantity - fromResellerReceived;
+
               if (fromResellerReceived > 0) {
                 console.log(`[DEBUG] Confirming consumption of ${fromResellerReceived} units from reseller`);
               }
-              
+
               if (returnToReseller > 0) {
                 console.log(`[DEBUG] Returning ${returnToReseller} units back to reseller available stock`);
                 resellerStock.availableQuantity += returnToReseller;
                 resellerStock.consumedQuantity -= returnToReseller;
-                console.log(`[DEBUG]   Updated quantities: Available +${returnToReseller}, Consumed -${returnToReseller}`);
               }
             }
-            
+
             console.log(`[DEBUG] After reseller update:`);
             console.log(`[DEBUG]   Available: ${resellerStock.availableQuantity}`);
             console.log(`[DEBUG]   Consumed: ${resellerStock.consumedQuantity}`);
-            
+
             await resellerStock.save();
           }
         }
@@ -6926,7 +6960,7 @@ export const completeStockRequest = async (req, res) => {
       // ============================================
       if (receivedCount > 0) {
         console.log(`\n[DEBUG] --- Center Stock Updates ---`);
-        
+
         let centerStock = await CenterStock.findOne({
           center: stockRequest.center,
           product: receipt.productId,
@@ -6940,7 +6974,7 @@ export const completeStockRequest = async (req, res) => {
             availableQuantity: 0,
             inTransitQuantity: 0,
             consumedQuantity: 0,
-            serialNumbers: []
+            serialNumbers: [],
           });
           console.log(`[DEBUG] Created new center stock record`);
         } else {
@@ -6950,22 +6984,26 @@ export const completeStockRequest = async (req, res) => {
 
         if (tracksSerialNumbers && serialsToReceive.length > 0) {
           console.log(`[DEBUG] Adding ${serialsToReceive.length} serials to center stock`);
-          
+
           let addedCount = 0;
           let reactivatedCount = 0;
-          
+
           for (const serialNumber of serialsToReceive) {
             const existingSerialIndex = centerStock.serialNumbers.findIndex(
-              sn => sn.serialNumber === serialNumber
+              (sn) => sn.serialNumber === serialNumber
             );
 
             if (existingSerialIndex !== -1) {
-              const existingSerial = centerStock.serialNumbers[existingSerialIndex];
-              
-              if (existingSerial.status === "damaged" || existingSerial.status === "damage_pending") {
+              const existingSerial =
+                centerStock.serialNumbers[existingSerialIndex];
+
+              if (
+                existingSerial.status === "damaged" ||
+                existingSerial.status === "damage_pending"
+              ) {
                 existingSerial.status = "available";
                 existingSerial.currentLocation = stockRequest.center;
-                
+
                 existingSerial.transferHistory.push({
                   fromCenter: stockRequest.warehouse,
                   toCenter: stockRequest.center,
@@ -6973,9 +7011,9 @@ export const completeStockRequest = async (req, res) => {
                   transferType: "inbound_transfer",
                   remark: "Stock request completion - reactivated damaged stock",
                   referenceId: stockRequest._id,
-                  transferredBy: userId
+                  transferredBy: userId,
                 });
-                
+
                 reactivatedCount++;
                 centerStock.availableQuantity += 1;
                 console.log(`[DEBUG]     ✓ Reactivated damaged serial ${serialNumber}`);
@@ -6983,20 +7021,18 @@ export const completeStockRequest = async (req, res) => {
                 console.log(`[DEBUG]     ⚠ Serial ${serialNumber} already available in center stock`);
               }
             } else {
-              // Get purchaseId for this serial
               let purchaseId = new mongoose.Types.ObjectId();
               let originalOutlet = stockRequest.warehouse;
 
-              // Try to get from outlet stock
               const outletStock = await OutletStock.findOne({
                 outlet: stockRequest.warehouse,
                 product: receipt.productId,
-                "serialNumbers.serialNumber": serialNumber
+                "serialNumbers.serialNumber": serialNumber,
               });
-              
+
               if (outletStock) {
                 const outletSerial = outletStock.serialNumbers.find(
-                  sn => sn.serialNumber === serialNumber
+                  (sn) => sn.serialNumber === serialNumber
                 );
                 if (outletSerial && outletSerial.purchaseId) {
                   purchaseId = outletSerial.purchaseId;
@@ -7005,39 +7041,40 @@ export const completeStockRequest = async (req, res) => {
                   originalOutlet = outletSerial.originalOutlet;
                 }
               }
-              
+
               centerStock.serialNumbers.push({
                 serialNumber: serialNumber,
                 purchaseId: purchaseId,
                 originalOutlet: originalOutlet,
                 status: "available",
                 currentLocation: stockRequest.center,
-                transferHistory: [{
-                  fromCenter: stockRequest.warehouse,
-                  toCenter: stockRequest.center,
-                  transferDate: new Date(),
-                  transferType: "inbound_transfer",
-                  remark: "Stock request completion",
-                  referenceId: stockRequest._id,
-                  transferredBy: userId
-                }]
+                transferHistory: [
+                  {
+                    fromCenter: stockRequest.warehouse,
+                    toCenter: stockRequest.center,
+                    transferDate: new Date(),
+                    transferType: "inbound_transfer",
+                    remark: "Stock request completion",
+                    referenceId: stockRequest._id,
+                    transferredBy: userId,
+                  },
+                ],
               });
-              
+
               addedCount++;
               centerStock.totalQuantity += 1;
               centerStock.availableQuantity += 1;
               console.log(`[DEBUG]     ✓ Added new serial ${serialNumber}`);
             }
           }
-          
+
           console.log(`[DEBUG] Summary: Added ${addedCount} new serials, reactivated ${reactivatedCount} damaged serials`);
         } else if (!tracksSerialNumbers && receivedCount > 0) {
-          // For non-serialized products
           centerStock.totalQuantity += receivedCount;
           centerStock.availableQuantity += receivedCount;
           console.log(`[DEBUG] Added ${receivedCount} non-serialized units to center stock`);
         }
-        
+
         console.log(`[DEBUG] After center update - Total: ${centerStock.totalQuantity}, Available: ${centerStock.availableQuantity}`);
         await centerStock.save();
       } else {
@@ -7047,11 +7084,11 @@ export const completeStockRequest = async (req, res) => {
       // Update product item in stock request
       productItem.receivedQuantity = receipt.receivedQuantity;
       productItem.receivedRemark = receipt.receivedRemark || "";
-      
+
       if (tracksSerialNumbers && serialsToReceive.length > 0) {
         productItem.transferredSerials = serialsToReceive;
       }
-      
+
       console.log(`[DEBUG] Product ${receipt.productId} processed successfully`);
       console.log(`[DEBUG]   Received: ${receipt.receivedQuantity}`);
       console.log(`[DEBUG]   From Reseller: ${fromResellerReceived}`);
@@ -7092,7 +7129,10 @@ export const completeStockRequest = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: `Stock request completed successfully. Received ${productReceipts.reduce((sum, r) => sum + r.receivedQuantity, 0)} units.`,
+      message: `Stock request completed successfully. Received ${productReceipts.reduce(
+        (sum, r) => sum + r.receivedQuantity,
+        0
+      )} units.`,
       data: populatedRequest,
     });
   } catch (error) {
@@ -7115,11 +7155,11 @@ export const completeStockRequest = async (req, res) => {
       });
     }
 
-    // Check for the specific inTransitQuantity error
     if (error.message.includes("Path `inTransitQuantity`")) {
       return res.status(400).json({
         success: false,
-        message: "Stock quantity calculation error. Please check stock levels and try again.",
+        message:
+          "Stock quantity calculation error. Please check stock levels and try again.",
         error: error.message,
       });
     }
