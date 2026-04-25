@@ -1,0 +1,1088 @@
+{
+  "info": {
+    "_postman_id": "complete-institute-api-v1",
+    "name": "Complete Institute & Dealership API",
+    "description": "Full API collection including Credential Management, Dashboard KPIs, and all Reports\n\nBase URL: https://gmplmis.com/dealership-api/api/v1\n\nAuthentication:\n- Admin Routes: Bearer Token (JWT)\n- External Routes: X-API-Key + X-API-Secret headers",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://gmplmis.com/dealership-api/api/v1"
+    },
+    {
+      "key": "auth_token",
+      "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5NTNkYjA0MGM4ZjEyNDc1NDhkZTY2OSIsIm1vYmlsZSI6Ijc1ODgxOTIzOTQiLCJlbWFpbCI6InN1cGVyYWRtaW43NTg4QGdtYWlsLmNvbSIsInJvbGVzIjpbIlNVUEVSQURNSU4iXSwiaWF0IjoxNzc2MzQ2MDU4LCJleHAiOjE3NzYzNzQ4NTh9.OwBTw_3KspQPYZxxS9KKPW7hw66CydUrasjVG94m2tg"
+    },
+    {
+      "key": "api_key",
+      "value": "inst_33b0026ed105719a69e668dec6bf52611ca65243372b4203"
+    },
+    {
+      "key": "api_secret",
+      "value": "04ea4433d350cc6f025f3411cc23e3e3555234b946a619d4b3dad9198b3aba6b"
+    },
+    {
+      "key": "client_id",
+      "value": "69e0e840ad50b1d60a6fd517"
+    },
+    {
+      "key": "branchId",
+      "value": "all"
+    },
+    {
+      "key": "startDate",
+      "value": "2026-01-01"
+    },
+    {
+      "key": "endDate",
+      "value": "2026-04-30"
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{auth_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "1. Admin - Credential Management (Bearer Token)",
+      "description": "These endpoints require JWT Bearer token authentication (Super Admin only)",
+      "item": [
+        {
+          "name": "Generate API Credentials",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Gandhi TVS Institute Client\",\n  \"instituteName\": \"Gandhi TVS Dealership\",\n  \"linkedUserId\": \"69e0e43796bbc07d5fd11fe1\",\n  \"description\": \"External API access for reporting and booking data\",\n  \"contactEmail\": \"admin@gandhitvs.in\",\n  \"contactPhone\": \"9876543210\",\n  \"purpose\": \"Data sync for institute management system\",\n  \"expiresAt\": \"2026-12-31T23:59:59.000Z\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/institute/generate-credentials",
+              "host": ["{{base_url}}"],
+              "path": ["institute", "generate-credentials"]
+            },
+            "description": "Generate new API key + secret for an institutional user.\n\n⚠️ Save the returned `apiSecret` — it will NOT be shown again."
+          },
+          "response": []
+        },
+        {
+          "name": "List All API Clients",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/institute/clients",
+              "host": ["{{base_url}}"],
+              "path": ["institute", "clients"]
+            },
+            "description": "List all API clients. `apiSecret` is NOT returned for security."
+          },
+          "response": []
+        },
+        {
+          "name": "Revoke API Credentials",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/institute/clients/{{client_id}}/revoke",
+              "host": ["{{base_url}}"],
+              "path": ["institute", "clients", "{{client_id}}", "revoke"]
+            },
+            "description": "Revoke (deactivate) API credentials for a specific client."
+          },
+          "response": []
+        },
+        {
+          "name": "Regenerate API Credentials",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/institute/clients/{{client_id}}/regenerate",
+              "host": ["{{base_url}}"],
+              "path": ["institute", "clients", "{{client_id}}", "regenerate"]
+            },
+            "description": "Regenerate a new API key + secret. Old credentials stop working immediately."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. External - Dashboard KPIs (API Key Auth)",
+      "description": "These endpoints require X-API-Key and X-API-Secret headers",
+      "auth": {
+        "type": "apikey",
+        "apikey": [
+          {
+            "key": "key",
+            "value": "X-API-Key",
+            "type": "string"
+          },
+          {
+            "key": "value",
+            "value": "{{api_key}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/health",
+              "host": ["{{base_url}}"],
+              "path": ["external", "health"]
+            },
+            "description": "Verify your API credentials are valid and the service is operational."
+          },
+          "response": []
+        },
+        {
+          "name": "Inventory KPIs",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/inventory?branchId={{branchId}}&locationType=both",
+              "host": ["{{base_url}}"],
+              "path": ["external", "inventory"],
+              "query": [
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                },
+                {
+                  "key": "locationType",
+                  "value": "both",
+                  "description": "branch | subdealer | both"
+                },
+                {
+                  "key": "modelType",
+                  "value": "EV",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Returns inventory KPIs: total, open, booked, wholesale, ageing >90 days."
+          },
+          "response": []
+        },
+        {
+          "name": "Cross-Sell KPIs",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/cross-sell?branchId={{branchId}}&startDate={{startDate}}&endDate={{endDate}}",
+              "host": ["{{base_url}}"],
+              "path": ["external", "cross-sell"],
+              "query": [
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                },
+                {
+                  "key": "startDate",
+                  "value": "{{startDate}}"
+                },
+                {
+                  "key": "endDate",
+                  "value": "{{endDate}}"
+                }
+              ]
+            },
+            "description": "Returns cross-sell KPIs: finance count, insurance count, exchange count, accessories revenue."
+          },
+          "response": []
+        },
+        {
+          "name": "Combined Sales Dashboard Summary",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/sales-summary?branchId={{branchId}}&startDate={{startDate}}&endDate={{endDate}}&locationType=both",
+              "host": ["{{base_url}}"],
+              "path": ["external", "sales-summary"],
+              "query": [
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                },
+                {
+                  "key": "startDate",
+                  "value": "{{startDate}}"
+                },
+                {
+                  "key": "endDate",
+                  "value": "{{endDate}}"
+                },
+                {
+                  "key": "locationType",
+                  "value": "both"
+                }
+              ]
+            },
+            "description": "Single call returning all three KPI sections: inventory, cross-sell, and sales management."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. External - Sales Reports (API Key Auth)",
+      "auth": {
+        "type": "apikey",
+        "apikey": [
+          {
+            "key": "key",
+            "value": "X-API-Key",
+            "type": "string"
+          },
+          {
+            "key": "value",
+            "value": "{{api_key}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "Branch Sales Report (JSON)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/branch-sales?startDate={{startDate}}&endDate={{endDate}}&branchId={{branchId}}&sourceType=BOTH&format=json",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "branch-sales"],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "{{startDate}}"
+                },
+                {
+                  "key": "endDate",
+                  "value": "{{endDate}}"
+                },
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                },
+                {
+                  "key": "sourceType",
+                  "value": "BOTH",
+                  "description": "BRANCH | SUBDEALER | BOTH"
+                },
+                {
+                  "key": "format",
+                  "value": "json",
+                  "description": "json | excel"
+                }
+              ]
+            },
+            "description": "Branch sales report filtered by allocation date. Shows ALLOCATED bookings only."
+          },
+          "response": []
+        },
+        {
+          "name": "Branch Sales Report (Excel Download)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/branch-sales?startDate={{startDate}}&endDate={{endDate}}&branchId={{branchId}}&sourceType=BOTH&format=excel",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "branch-sales"],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "{{startDate}}"
+                },
+                {
+                  "key": "endDate",
+                  "value": "{{endDate}}"
+                },
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                },
+                {
+                  "key": "sourceType",
+                  "value": "BOTH"
+                },
+                {
+                  "key": "format",
+                  "value": "excel"
+                }
+              ]
+            },
+            "description": "Downloads Excel file. Set format=excel to get .xlsx download."
+          },
+          "response": []
+        },
+        {
+          "name": "Booking Report (Non-Allocated)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/bookings?startDate={{startDate}}&endDate={{endDate}}&branchId={{branchId}}&format=json",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "bookings"],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "{{startDate}}"
+                },
+                {
+                  "key": "endDate",
+                  "value": "{{endDate}}"
+                },
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                },
+                {
+                  "key": "format",
+                  "value": "json"
+                }
+              ]
+            },
+            "description": "Booking report **excluding** allocated bookings (`chassisAllocationStatus != ALLOCATED`)."
+          },
+          "response": []
+        },
+        {
+          "name": "Booking Allocation Report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/booking-allocation?startDate={{startDate}}&endDate={{endDate}}&branchId={{branchId}}&format=json",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "booking-allocation"],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "{{startDate}}"
+                },
+                {
+                  "key": "endDate",
+                  "value": "{{endDate}}"
+                },
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                },
+                {
+                  "key": "format",
+                  "value": "json"
+                }
+              ]
+            },
+            "description": "Booking report filtered by **allocation date** (from vehicle allocationHistory)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. External - Financial Reports (API Key Auth)",
+      "auth": {
+        "type": "apikey",
+        "apikey": [
+          {
+            "key": "key",
+            "value": "X-API-Key",
+            "type": "string"
+          },
+          {
+            "key": "value",
+            "value": "{{api_key}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "GC Report (Guarantee Certificate)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/gc?startDate={{startDate}}&endDate={{endDate}}&branchId={{branchId}}&format=json",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "gc"],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "{{startDate}}"
+                },
+                {
+                  "key": "endDate",
+                  "value": "{{endDate}}"
+                },
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                },
+                {
+                  "key": "format",
+                  "value": "json"
+                }
+              ]
+            },
+            "description": "GC report — shows Finance Disbursement ledger entries where `gcAmount > 0`."
+          },
+          "response": []
+        },
+        {
+          "name": "Receipt Report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/receipts?startDate={{startDate}}&endDate={{endDate}}&branchId={{branchId}}&format=json",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "receipts"],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "{{startDate}}"
+                },
+                {
+                  "key": "endDate",
+                  "value": "{{endDate}}"
+                },
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                },
+                {
+                  "key": "includeCancelled",
+                  "value": "false"
+                },
+                {
+                  "key": "format",
+                  "value": "json"
+                }
+              ]
+            },
+            "description": "Receipt report filtered by `receiptDate`. Includes Refund column (Yes/No)."
+          },
+          "response": []
+        },
+        {
+          "name": "Outstanding Report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/outstanding?branchId={{branchId}}&format=json",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "outstanding"],
+              "query": [
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                },
+                {
+                  "key": "format",
+                  "value": "json"
+                }
+              ]
+            },
+            "description": "Outstanding balance report. Shows bookings where balanceAmount > 0 OR pendingVerificationAmount > 0."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "5. External - Stock & Inventory Reports (API Key Auth)",
+      "auth": {
+        "type": "apikey",
+        "apikey": [
+          {
+            "key": "key",
+            "value": "X-API-Key",
+            "type": "string"
+          },
+          {
+            "key": "value",
+            "value": "{{api_key}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "Current Stock Report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/stock/current?branchId={{branchId}}&locationType=both&status=in_stock&showAgeAnalysis=true&format=json",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "stock", "current"],
+              "query": [
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                },
+                {
+                  "key": "locationType",
+                  "value": "both",
+                  "description": "branch | subdealer | both"
+                },
+                {
+                  "key": "status",
+                  "value": "in_stock"
+                },
+                {
+                  "key": "showAgeAnalysis",
+                  "value": "true"
+                },
+                {
+                  "key": "format",
+                  "value": "json"
+                }
+              ]
+            },
+            "description": "Current stock report showing vehicles by branch or subdealer."
+          },
+          "response": []
+        },
+        {
+          "name": "Stock Transfer Report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/stock/transfers?startDate={{startDate}}&endDate={{endDate}}&format=json",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "stock", "transfers"],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "{{startDate}}"
+                },
+                {
+                  "key": "endDate",
+                  "value": "{{endDate}}"
+                },
+                {
+                  "key": "format",
+                  "value": "json"
+                }
+              ]
+            },
+            "description": "Stock transfer report — one row per vehicle item in each transfer."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "6. External - Insurance & RTO Reports (API Key Auth)",
+      "auth": {
+        "type": "apikey",
+        "apikey": [
+          {
+            "key": "key",
+            "value": "X-API-Key",
+            "type": "string"
+          },
+          {
+            "key": "value",
+            "value": "{{api_key}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "Insurance Pending Report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/insurance/pending?branchId={{branchId}}&format=json",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "insurance", "pending"],
+              "query": [
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                },
+                {
+                  "key": "format",
+                  "value": "json"
+                }
+              ]
+            },
+            "description": "Insurance pending report. Shows bookings with insuranceStatus: AWAITING | PENDING | NOT_STARTED | LATER."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "7. External - Other Reports (API Key Auth)",
+      "auth": {
+        "type": "apikey",
+        "apikey": [
+          {
+            "key": "key",
+            "value": "X-API-Key",
+            "type": "string"
+          },
+          {
+            "key": "value",
+            "value": "{{api_key}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "Quotation Report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/quotations?startDate={{startDate}}&endDate={{endDate}}&format=json",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "quotations"],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "{{startDate}}"
+                },
+                {
+                  "key": "endDate",
+                  "value": "{{endDate}}"
+                },
+                {
+                  "key": "format",
+                  "value": "json"
+                }
+              ]
+            },
+            "description": "Quotation report — one row per quotation."
+          },
+          "response": []
+        },
+        {
+          "name": "Broker / Exchange Report (Excel Only)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/brokers?startDate={{startDate}}&endDate={{endDate}}&branchId={{branchId}}",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "brokers"],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "{{startDate}}"
+                },
+                {
+                  "key": "endDate",
+                  "value": "{{endDate}}"
+                },
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                }
+              ]
+            },
+            "description": "Broker/Exchange report — shows bookings with exchange: true. Always returns Excel."
+          },
+          "response": []
+        },
+        {
+          "name": "Dummy Invoice Report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/dummy-invoice?startDate={{startDate}}&endDate={{endDate}}&branchId={{branchId}}&format=json",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "dummy-invoice"],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "{{startDate}}"
+                },
+                {
+                  "key": "endDate",
+                  "value": "{{endDate}}"
+                },
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                },
+                {
+                  "key": "format",
+                  "value": "json"
+                }
+              ]
+            },
+            "description": "Dummy invoice report with dynamic price component columns."
+          },
+          "response": []
+        },
+        {
+          "name": "Subdealer Payment Allocation Report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/subdealer-allocations?startDate={{startDate}}&endDate={{endDate}}&subdealerId=all&branchId={{branchId}}&format=json",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "subdealer-allocations"],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "{{startDate}}"
+                },
+                {
+                  "key": "endDate",
+                  "value": "{{endDate}}"
+                },
+                {
+                  "key": "subdealerId",
+                  "value": "all"
+                },
+                {
+                  "key": "branchId",
+                  "value": "{{branchId}}"
+                },
+                {
+                  "key": "format",
+                  "value": "json"
+                }
+              ]
+            },
+            "description": "Subdealer on-account payment allocation report — shows which bookings each on-account receipt was allocated to."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "8. Quick Tests",
+      "item": [
+        {
+          "name": "Test - Invalid API Key (Should Fail)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "inst_invalid_key"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "invalid_secret"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/health",
+              "host": ["{{base_url}}"],
+              "path": ["external", "health"]
+            },
+            "description": "Should return 401 Unauthorized"
+          },
+          "response": []
+        },
+        {
+          "name": "Test - Missing Dates (Should Fail)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/reports/branch-sales",
+              "host": ["{{base_url}}"],
+              "path": ["reports", "branch-sales"]
+            },
+            "description": "Should return 400 - Start date and end date are required"
+          },
+          "response": []
+        },
+        {
+          "name": "Test - Branch Sales with Filters",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "X-API-Secret",
+                "value": "{{api_secret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/external/reports/branch-sales?startDate=2026-01-01&endDate=2026-04-30&branchId=all&sourceType=BOTH&modelType=EV&format=json",
+              "host": ["{{base_url}}"],
+              "path": ["external", "reports", "branch-sales"],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "2026-01-01"
+                },
+                {
+                  "key": "endDate",
+                  "value": "2026-04-30"
+                },
+                {
+                  "key": "branchId",
+                  "value": "all"
+                },
+                {
+                  "key": "sourceType",
+                  "value": "BOTH"
+                },
+                {
+                  "key": "modelType",
+                  "value": "EV"
+                },
+                {
+                  "key": "format",
+                  "value": "json"
+                }
+              ]
+            },
+            "description": "Test with EV filter and JSON format"
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

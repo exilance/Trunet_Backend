@@ -1,5 +1,3 @@
-////*************************** added opening stock ************************************/
-
 import mongoose from "mongoose";
 import StockUsage from "../models/StockUsage.js";
 import StockRequest from "../models/StockRequest.js";

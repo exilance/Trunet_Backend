@@ -417,8 +417,6 @@ const stockPurchasePopulateOptions = [
       "_id productTitle productCode productImage productCategory trackSerialNumber",
   },
 ];
-
-
 // export const getAllStockPurchases = async (req, res) => {
 //   try {
 //     const { hasAccess, permissions, userCenter } =
@@ -677,9 +675,12 @@ export const getStockPurchaseById = async (req, res) => {
 
 export const updateStockPurchase = async (req, res) => {
   try {
-    const { id } = req.params;
+    console.log("\n🔥 ========== UPDATE STOCK PURCHASE START ==========");
+    console.log("Request Body:", JSON.stringify(req.body, null, 2));
 
+    const { id } = req.params;
     const outletId = await validateUserOutletAccess(req.user._id);
+    console.log("Outlet ID:", outletId);
 
     const {
       type,
@@ -694,47 +695,225 @@ export const updateStockPurchase = async (req, res) => {
       products,
     } = req.body;
 
+    // ============================================
+    // STEP 1: FIND EXISTING PURCHASE (DB SNAPSHOT)
+    // ============================================
+    console.log("\n📄 STEP 1: Finding existing purchase...");
+
     const existingPurchase = await StockPurchase.findOne({
       _id: id,
       outlet: outletId,
     });
 
     if (!existingPurchase) {
+      console.log("❌ Purchase not found or access denied");
       return res.status(404).json({
         success: false,
         message: "Stock purchase not found or access denied",
       });
     }
 
-    const hasTransfers = existingPurchase.products.some(
-      (product) => product.availableQuantity < product.purchasedQuantity
-    );
+    console.log("   ✅ Purchase FOUND");
+    console.log("   Invoice No     :", existingPurchase.invoiceNo);
+    console.log("   Products count :", existingPurchase.products.length);
+    console.log("   Existing products snapshot:");
+    existingPurchase.products.forEach((p, i) => {
+      console.log(`     [${i + 1}] Product ID       : ${p.product}`);
+      console.log(`           purchasedQuantity : ${p.purchasedQuantity}`);
+      console.log(`           availableQuantity : ${p.availableQuantity}`);
+      console.log(`           serialNumbers     : ${p.serialNumbers?.length || 0}`);
+    });
+
+    // ============================================
+    // STEP 2: CHECK IF ANY STOCK HAS BEEN TRANSFERRED
+    // For serialized products → check if any serial status is NOT "available"
+    // For non-serialized products → check availableQty < purchasedQty
+    // This handles corrupted data where qty mismatch is not a real transfer
+    // ============================================
+    console.log("\n🔎 STEP 2: Checking for transferred stock...");
+
+    let hasTransfers = false;
+
+    for (const product of existingPurchase.products) {
+      const isSerializedProduct = product.serialNumbers && product.serialNumbers.length > 0;
+
+      if (isSerializedProduct) {
+        // For serialized: check if ANY serial has been transferred/consumed/sold
+        const transferredSerials = product.serialNumbers.filter(
+          (sn) => sn.status !== "available"
+        );
+
+        if (transferredSerials.length > 0) {
+          console.log(`   ❌ Product ${product.product} has ${transferredSerials.length} transferred serials:`);
+          transferredSerials.forEach((sn) => {
+            console.log(`      Serial: ${sn.serialNumber}, Status: ${sn.status}`);
+          });
+          hasTransfers = true;
+          break;
+        } else {
+          console.log(`   ✅ Product ${product.product} — serialized, all ${product.serialNumbers.length} serials available`);
+        }
+      } else {
+        // For non-serialized: check availableQty vs purchasedQty
+        if (product.availableQuantity < product.purchasedQuantity) {
+          console.log(`   ❌ Product ${product.product} — non-serialized, qty transferred`);
+          console.log(`      purchased=${product.purchasedQuantity}, available=${product.availableQuantity}, transferred=${product.purchasedQuantity - product.availableQuantity}`);
+          hasTransfers = true;
+          break;
+        } else {
+          console.log(`   ✅ Product ${product.product} — non-serialized, no transfers (purchased=${product.purchasedQuantity}, available=${product.availableQuantity})`);
+        }
+      }
+    }
 
     if (hasTransfers) {
+      console.log("❌ Cannot update — stock has been transferred");
       return res.status(400).json({
         success: false,
         message: "Cannot update stock purchase that has transferred stock",
       });
     }
 
-    for (const productItem of existingPurchase.products) {
-      await OutletStock.findOneAndUpdate(
-        { outlet: outletId, product: productItem.product },
-        {
-          $inc: {
-            totalQuantity: -productItem.purchasedQuantity,
-            availableQuantity: -productItem.purchasedQuantity,
-          },
-          $pull: {
-            serialNumbers: { purchaseId: existingPurchase._id },
-          },
-        }
-      );
-    }
+    console.log("   ✅ No transfers found — safe to update");
 
-    let processedProducts = existingPurchase.products;
-    if (products && Array.isArray(products)) {
-      processedProducts = products.map((product) => {
+    // ============================================
+    // STEP 3: VALIDATE NEW PRODUCTS FIRST
+    // ⚠️  Always validate BEFORE touching any stock
+    //     so a failure here never corrupts existing stock
+    // ============================================
+    console.log("\n🔍 STEP 3: Validating new products from request...");
+
+    let processedProducts = [];
+
+    if (products && Array.isArray(products) && products.length > 0) {
+      for (const product of products) {
+        console.log(`\n   ── Product: ${product.product} ──`);
+        console.log(`   purchasedQuantity : ${product.purchasedQuantity}`);
+        console.log(`   price             : ${product.price}`);
+        console.log(`   serialNumbers     : ${product.serialNumbers?.length || 0}`);
+
+        // Extract serial numbers correctly from request
+        let serialNumbersArray = [];
+        if (product.serialNumbers && product.serialNumbers.length > 0) {
+          serialNumbersArray = product.serialNumbers.map(sn => 
+            typeof sn === "string" ? sn : sn.serialNumber
+          );
+        }
+
+        // --- Duplicate serials within same request ---
+        if (serialNumbersArray.length > 0) {
+          const uniqueSerials = new Set(serialNumbersArray);
+          if (uniqueSerials.size !== serialNumbersArray.length) {
+            console.log("   ❌ Duplicate serial numbers found within this request");
+            return res.status(400).json({
+              success: false,
+              message: "Validation error",
+              errors: [
+                {
+                  field: "products",
+                  message: "Duplicate serial numbers found in request for this product",
+                  value: serialNumbersArray,
+                },
+              ],
+            });
+          }
+          console.log("   ✅ No duplicate serials in request");
+
+          // --- Serial count must match purchasedQuantity ---
+          if (serialNumbersArray.length !== product.purchasedQuantity) {
+            console.log(
+              `   ❌ Serial count (${serialNumbersArray.length}) does not match purchasedQuantity (${product.purchasedQuantity})`
+            );
+            const productInfo = await Product.findById(product.product);
+            return res.status(400).json({
+              success: false,
+              message: "Validation error",
+              errors: [
+                {
+                  field: "products",
+                  message: `Serial numbers count (${serialNumbersArray.length}) must match purchased quantity (${product.purchasedQuantity}) for product "${productInfo?.productTitle || product.product}"`,
+                },
+              ],
+            });
+          }
+          console.log("   ✅ Serial count matches purchasedQuantity");
+
+          // --- Serials must not exist in OTHER purchases ---
+          const existingSerialPurchases = await StockPurchase.find({
+            _id: { $ne: id },
+            outlet: outletId,
+            "products.serialNumbers.serialNumber": { $in: serialNumbersArray },
+          });
+
+          if (existingSerialPurchases.length > 0) {
+            const conflictSerials = [];
+            existingSerialPurchases.forEach((purchase) => {
+              purchase.products.forEach((prod) => {
+                prod.serialNumbers.forEach((sn) => {
+                  if (serialNumbersArray.includes(sn.serialNumber)) {
+                    conflictSerials.push(sn.serialNumber);
+                  }
+                });
+              });
+            });
+
+            if (conflictSerials.length > 0) {
+              console.log(`   ❌ Serials already exist in other purchases: ${conflictSerials.join(", ")}`);
+              const productInfo = await Product.findById(product.product);
+              return res.status(400).json({
+                success: false,
+                message: "Validation error",
+                errors: [
+                  {
+                    field: "products",
+                    message: `Serial numbers already exist in other purchases for product "${productInfo?.productTitle || "Unknown"}": ${conflictSerials.join(", ")}`,
+                    value: conflictSerials,
+                  },
+                ],
+              });
+            }
+          }
+          console.log("   ✅ No serial conflicts with other purchases");
+
+          // Also check OutletStock for existing serials
+          const existingStockSerials = await OutletStock.findOne({
+            outlet: outletId,
+            product: product.product,
+            "serialNumbers.serialNumber": { $in: serialNumbersArray },
+          });
+
+          if (existingStockSerials) {
+            const conflictSerialsInStock = [];
+            existingStockSerials.serialNumbers.forEach((sn) => {
+              if (serialNumbersArray.includes(sn.serialNumber)) {
+                // Check if this serial belongs to THIS purchase
+                const belongsToCurrentPurchase = sn.purchaseId?.toString() === id;
+                if (!belongsToCurrentPurchase) {
+                  conflictSerialsInStock.push(sn.serialNumber);
+                }
+              }
+            });
+
+            if (conflictSerialsInStock.length > 0) {
+              console.log(`   ❌ Serials already exist in outlet stock from other sources: ${conflictSerialsInStock.join(", ")}`);
+              const productInfo = await Product.findById(product.product);
+              return res.status(400).json({
+                success: false,
+                message: "Validation error",
+                errors: [
+                  {
+                    field: "products",
+                    message: `Serial numbers already exist in stock for product "${productInfo?.productTitle || "Unknown"}": ${conflictSerialsInStock.join(", ")}`,
+                    value: conflictSerialsInStock,
+                  },
+                ],
+              });
+            }
+          }
+          console.log("   ✅ No serial conflicts in outlet stock");
+        }
+
+        // --- Build processed product with proper serial structure ---
         const processedProduct = {
           product: product.product,
           price: product.price,
@@ -743,67 +922,271 @@ export const updateStockPurchase = async (req, res) => {
           serialNumbers: [],
         };
 
-        if (product.serialNumbers && product.serialNumbers.length > 0) {
-          processedProduct.serialNumbers = product.serialNumbers.map(
-            (serialNumber) => ({
-              serialNumber:
-                typeof serialNumber === "string"
-                  ? serialNumber
-                  : serialNumber.serialNumber,
-              status: "available",
-              currentLocation: outletId,
-              transferredTo: null,
-              transferDate: null,
-            })
-          );
+        if (serialNumbersArray.length > 0) {
+          processedProduct.serialNumbers = serialNumbersArray.map((serialNumber) => ({
+            serialNumber: serialNumber,
+            status: "available",
+            currentLocation: outletId,
+            transferredTo: null,
+            transferDate: null,
+            consumedDate: null,
+          }));
         }
 
-        return processedProduct;
+        processedProducts.push(processedProduct);
+        console.log(`   ✅ Product validated and processed with ${processedProduct.serialNumbers.length} serials`);
+      }
+    } else {
+      // Keep existing products if no new products provided
+      processedProducts = existingPurchase.products.map(p => ({
+        product: p.product,
+        price: p.price,
+        purchasedQuantity: p.purchasedQuantity,
+        availableQuantity: p.availableQuantity,
+        serialNumbers: p.serialNumbers || [],
+      }));
+      console.log("   ℹ️  No products array in request — keeping existing products");
+    }
+
+    console.log(`\n   ✅ All ${processedProducts.length} products validated successfully`);
+
+    // ============================================
+    // STEP 4: REMOVE OLD STOCK
+    // (only reached after ALL validations pass)
+    // ============================================
+    console.log("\n🗑️  STEP 4: Removing old stock contributed by this invoice...");
+
+    for (const productItem of existingPurchase.products) {
+      console.log(`\n   ── Product: ${productItem.product} ──`);
+
+      const outletStock = await OutletStock.findOne({
+        outlet: outletId,
+        product: productItem.product,
+      });
+
+      if (!outletStock) {
+        console.log("   ⚠️  No outlet stock record found — skipping");
+        continue;
+      }
+
+      console.log(`   Current DB stock — total: ${outletStock.totalQuantity}, available: ${outletStock.availableQuantity}`);
+
+      // Serialized: count exactly how many serials THIS invoice added
+      const serialsFromThisPurchase = outletStock.serialNumbers.filter(
+        (sn) => sn.purchaseId?.toString() === existingPurchase._id.toString()
+      );
+
+      // Non-serialized: use stored purchasedQuantity from DB snapshot
+      const quantityToRemove =
+        serialsFromThisPurchase.length > 0
+          ? serialsFromThisPurchase.length
+          : productItem.purchasedQuantity;
+
+      console.log(`   Serials belonging to this invoice : ${serialsFromThisPurchase.length}`);
+      console.log(`   Quantity to remove                : ${quantityToRemove}`);
+      console.log(`   Source                            : ${serialsFromThisPurchase.length > 0 ? "serial count" : "stored purchasedQuantity"}`);
+
+      const newTotal = Math.max(0, outletStock.totalQuantity - quantityToRemove);
+      const newAvailable = Math.max(0, outletStock.availableQuantity - quantityToRemove);
+
+      console.log(`   totalQuantity     : ${outletStock.totalQuantity} → ${newTotal} (-${outletStock.totalQuantity - newTotal})`);
+      console.log(`   availableQuantity : ${outletStock.availableQuantity} → ${newAvailable} (-${outletStock.availableQuantity - newAvailable})`);
+
+      outletStock.totalQuantity = newTotal;
+      outletStock.availableQuantity = newAvailable;
+
+      const beforeSerialCount = outletStock.serialNumbers.length;
+      outletStock.serialNumbers = outletStock.serialNumbers.filter(
+        (sn) => sn.purchaseId?.toString() !== existingPurchase._id.toString()
+      );
+      const afterSerialCount = outletStock.serialNumbers.length;
+
+      console.log(`   Serials removed   : ${beforeSerialCount - afterSerialCount} (${beforeSerialCount} → ${afterSerialCount})`);
+
+      outletStock.lastUpdated = new Date();
+      await outletStock.save();
+      console.log(`   ✅ Old stock successfully removed for this product`);
+    }
+
+    // ============================================
+    // STEP 5: UPDATE PURCHASE DOCUMENT IN DB
+    // ⚠️  CRITICAL FIX: Use .save() instead of findOneAndUpdate
+    //     to trigger the pre('save') middleware
+    // ============================================
+    console.log("\n📝 STEP 5: Updating purchase document...");
+
+    // Fetch the purchase document to update
+    const purchaseToUpdate = await StockPurchase.findOne({ 
+      _id: id, 
+      outlet: outletId 
+    });
+
+    if (!purchaseToUpdate) {
+      console.log("❌ Purchase not found for update");
+      return res.status(404).json({
+        success: false,
+        message: "Failed to update purchase",
       });
     }
 
-    const updateData = {
-      ...(type && { type }),
-      ...(date && { date }),
-      ...(invoiceNo && { invoiceNo: invoiceNo.trim() }),
-      ...(vendor && { vendor }),
-      ...(transportAmount !== undefined && { transportAmount }),
-      ...(remark !== undefined && { remark }),
-      ...(cgst !== undefined && { cgst }),
-      ...(sgst !== undefined && { sgst }),
-      ...(igst !== undefined && { igst }),
-      ...(products && { products: processedProducts }),
-    };
+    // Update basic fields if provided
+    if (type !== undefined) purchaseToUpdate.type = type;
+    if (date !== undefined) purchaseToUpdate.date = date;
+    if (invoiceNo !== undefined) purchaseToUpdate.invoiceNo = invoiceNo.trim();
+    if (vendor !== undefined) purchaseToUpdate.vendor = vendor;
+    if (transportAmount !== undefined) purchaseToUpdate.transportAmount = transportAmount;
+    if (remark !== undefined) purchaseToUpdate.remark = remark;
+    if (cgst !== undefined) purchaseToUpdate.cgst = cgst;
+    if (sgst !== undefined) purchaseToUpdate.sgst = sgst;
+    if (igst !== undefined) purchaseToUpdate.igst = igst;
 
-    const updatedPurchase = await StockPurchase.findOneAndUpdate(
-      { _id: id, outlet: outletId },
-      updateData,
-      { new: true, runValidators: true }
-    );
+    // Replace products with processed products
+    purchaseToUpdate.products = processedProducts;
+
+    // Mark products as modified to ensure middleware processes them
+    purchaseToUpdate.markModified('products');
+
+    console.log("   Update data prepared, calling .save() to trigger middleware...");
+    
+    // Save to trigger pre-save middleware (which handles serial formatting and calculations)
+    const updatedPurchase = await purchaseToUpdate.save();
+
+    console.log("   ✅ Purchase document updated successfully with middleware");
+    console.log("   Updated products count:", updatedPurchase.products.length);
+    console.log("   Product amounts:", updatedPurchase.products.map(p => ({
+      product: p.product.toString(),
+      quantity: p.purchasedQuantity,
+      serials: p.serialNumbers.length
+    })));
+
+    // ============================================
+    // STEP 6: ADD NEW STOCK BACK TO OUTLET STOCK
+    // ============================================
+    console.log("\n➕ STEP 6: Adding new stock to outlet stock...");
 
     for (const productItem of updatedPurchase.products) {
-      await OutletStock.updateStock(
-        outletId,
-        productItem.product,
-        productItem.purchasedQuantity,
-        productItem.serialNumbers,
-        updatedPurchase._id
-      );
+      console.log(`\n   ── Product: ${productItem.product} ──`);
+      console.log(`   Quantity to add : ${productItem.purchasedQuantity}`);
+      console.log(`   Serials to add  : ${productItem.serialNumbers?.length || 0}`);
+
+      let outletStock = await OutletStock.findOne({
+        outlet: outletId,
+        product: productItem.product,
+      });
+
+      if (!outletStock) {
+        console.log("   ℹ️  No existing outlet stock — creating new record");
+        outletStock = new OutletStock({
+          outlet: outletId,
+          product: productItem.product,
+          totalQuantity: 0,
+          availableQuantity: 0,
+          serialNumbers: [],
+        });
+      } else {
+        console.log(`   Existing stock — total: ${outletStock.totalQuantity}, available: ${outletStock.availableQuantity}`);
+      }
+
+      const oldTotal = outletStock.totalQuantity;
+      const oldAvailable = outletStock.availableQuantity;
+
+      outletStock.totalQuantity += productItem.purchasedQuantity;
+      outletStock.availableQuantity += productItem.purchasedQuantity;
+
+      console.log(`   totalQuantity     : ${oldTotal} → ${outletStock.totalQuantity} (+${productItem.purchasedQuantity})`);
+      console.log(`   availableQuantity : ${oldAvailable} → ${outletStock.availableQuantity} (+${productItem.purchasedQuantity})`);
+
+      if (productItem.serialNumbers && productItem.serialNumbers.length > 0) {
+        let addedCount = 0;
+        let skippedCount = 0;
+
+        for (const serial of productItem.serialNumbers) {
+          const serialNumber = serial.serialNumber;
+
+          const alreadyExists = outletStock.serialNumbers.some(
+            (sn) => sn.serialNumber === serialNumber
+          );
+
+          if (!alreadyExists) {
+            outletStock.serialNumbers.push({
+              serialNumber: serialNumber,
+              purchaseId: updatedPurchase._id,
+              status: serial.status || "available",
+              currentLocation: serial.currentLocation || outletId,
+              sourceType: "purchase",
+              transferHistory: [],
+              transferredTo: serial.transferredTo || null,
+              transferDate: serial.transferDate || null,
+              consumedDate: serial.consumedDate || null,
+            });
+            addedCount++;
+          } else {
+            console.log(`   ⚠️  Serial already exists, skipping: ${serialNumber}`);
+            skippedCount++;
+          }
+        }
+
+        console.log(`   Serials added   : ${addedCount}`);
+        console.log(`   Serials skipped : ${skippedCount}`);
+      } else {
+        console.log("   📝 Non-serialized product — no serials to add");
+      }
+
+      outletStock.lastUpdated = new Date();
+      await outletStock.save();
+      console.log("   ✅ Outlet stock saved successfully");
     }
+
+    // ============================================
+    // STEP 7: CLEAN UP EMPTY STOCK RECORDS
+    // ============================================
+    console.log("\n🧹 STEP 7: Cleaning up empty stock records...");
+
+    const deleteResult = await OutletStock.deleteMany({
+      outlet: outletId,
+      totalQuantity: 0,
+      serialNumbers: { $size: 0 },
+    });
+
+    console.log(`   Deleted ${deleteResult.deletedCount} empty stock record(s)`);
+
+    // ============================================
+    // STEP 8: RETURN POPULATED RESPONSE
+    // ============================================
+    console.log("\n✅ UPDATE COMPLETED SUCCESSFULLY");
+    console.log("🔥 ========== UPDATE STOCK PURCHASE END ==========\n");
 
     const populatedPurchase = await StockPurchase.findById(updatedPurchase._id)
       .populate("vendor", "businessName name email mobile")
       .populate("outlet", "_id centerName centerCode centerType")
       .populate("products.product", "productTitle productCode productPrice");
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: "Stock purchase updated successfully",
       data: populatedPurchase,
     });
+
   } catch (error) {
-    console.error("Error updating stock purchase:", error);
-    handleControllerError(error, res);
+    console.error("\n❌ ERROR in updateStockPurchase:");
+    console.error("   Message:", error.message);
+    console.error("   Stack  :", error.stack);
+
+    if (error.code === 11000) {
+      // Extract duplicate key information
+      const field = Object.keys(error.keyPattern)[0];
+      const value = error.keyValue[field];
+      return res.status(400).json({
+        success: false,
+        message: `Duplicate value for ${field}: ${value}`,
+        error: error.message,
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to update stock purchase",
+    });
   }
 };
 

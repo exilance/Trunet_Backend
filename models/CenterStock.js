@@ -15,7 +15,7 @@ const centerStockSchema = new mongoose.Schema(
         message: "Must be a valid Center (not Outlet)",
       },
     },
-    product: {
+    product: {  
       type: mongoose.Schema.Types.ObjectId,
       ref: "Product",
       required: true,

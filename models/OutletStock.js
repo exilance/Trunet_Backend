@@ -349,9 +349,17 @@ outletStockSchema.methods.getFIFOStock = function (quantity) {
 //     throw error;
 //   }
 // };
-
-
-
+outletStockSchema.pre('save', function(next) {
+  if (this.inTransitQuantity < 0) {
+    console.warn(`inTransitQuantity was ${this.inTransitQuantity}, resetting to 0`);
+    this.inTransitQuantity = 0;
+  }
+  if (this.availableQuantity < 0) {
+    console.warn(`availableQuantity was ${this.availableQuantity}, resetting to 0`);
+    this.availableQuantity = 0;
+  }
+  next();
+});
 outletStockSchema.methods.transferStock = async function (
   toCenter,
   quantity,
